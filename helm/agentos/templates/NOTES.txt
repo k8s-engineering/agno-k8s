@@ -1,0 +1,34 @@
+AgentOS has been deployed to {{ .Release.Namespace }}.
+
+  Service: {{ include "agentos.fullname" . }}:{{ .Values.service.port }}
+
+{{- if .Values.istio.enabled }}
+
+  Istio VirtualService:
+    Host: {{ .Values.istio.hostname }}
+    Gateway: {{ .Values.istio.gateway }}
+{{- end }}
+
+{{- if .Values.gitSync.enabled }}
+
+  Git-Sync:
+    Repo: {{ .Values.gitSync.repo }}
+    Branch: {{ .Values.gitSync.branch }}
+    Poll: {{ .Values.gitSync.period }}
+{{- end }}
+
+{{- if .Values.externalSecrets.enabled }}
+
+  External Secrets:
+    Store: {{ .Values.externalSecrets.secretStoreRef.name }} ({{ .Values.externalSecrets.secretStoreRef.kind }})
+    Target: {{ .Values.externalSecrets.targetSecretName }}
+{{- end }}
+
+{{- if .Values.initDb.enabled }}
+
+  Init DB:
+    Database: {{ .Values.database.name }} @ {{ .Values.database.host }}:{{ .Values.database.port }}
+    App User: {{ .Values.database.appUser }}
+{{- end }}
+
+Health check: kubectl -n {{ .Release.Namespace }} get pods -l {{ include "agentos.selectorLabels" . | replace ": " "=" | replace "\n" "," }}

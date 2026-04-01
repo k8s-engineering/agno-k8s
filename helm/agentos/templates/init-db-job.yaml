@@ -1,0 +1,84 @@
+{{- if .Values.initDb.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agentos.fullname" . }}-init-db
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+  annotations:
+    # Run before the main deployment
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  ttlSecondsAfterFinished: {{ .Values.initDb.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentos.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: init-db
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init-db
+          image: {{ .Values.initDb.image }}
+          env:
+            - name: PGHOST
+              value: {{ .Values.database.host | quote }}
+            - name: PGPORT
+              value: {{ .Values.database.port | quote }}
+            - name: DB_NAME
+              value: {{ .Values.database.name | quote }}
+            - name: APP_USER
+              value: {{ .Values.database.appUser | quote }}
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.initDb.adminCredentials.secretName }}
+                  key: {{ .Values.initDb.adminCredentials.usernameKey }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.initDb.adminCredentials.secretName }}
+                  key: {{ .Values.initDb.adminCredentials.passwordKey }}
+            {{- if .Values.externalSecrets.enabled }}
+            - name: APP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecrets.targetSecretName }}
+                  key: db_pass
+                  optional: true
+            {{- end }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              echo "=== Init DB: Creating database '${DB_NAME}' ==="
+
+              # Create database if it doesn't exist
+              psql -tc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" | grep -q 1 \
+                || psql -c "CREATE DATABASE ${DB_NAME}"
+
+              # Connect to the target database for remaining operations
+              export PGDATABASE="${DB_NAME}"
+
+              # Create app user if it doesn't exist
+              psql -tc "SELECT 1 FROM pg_roles WHERE rolname = '${APP_USER}'" | grep -q 1 \
+                || psql -c "CREATE USER ${APP_USER} WITH PASSWORD '${APP_PASS:-changeme}'"
+
+              # Create ai schema for PgVector / RAG tables
+              psql -c "CREATE SCHEMA IF NOT EXISTS ai AUTHORIZATION ${APP_USER}"
+
+              # Enable pgvector extension
+              psql -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+              # Grant privileges
+              psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${APP_USER}"
+              psql -c "GRANT ALL ON SCHEMA ai TO ${APP_USER}"
+              psql -c "GRANT ALL ON SCHEMA public TO ${APP_USER}"
+              psql -c "ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON TABLES TO ${APP_USER}"
+              psql -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${APP_USER}"
+
+              echo "=== Init DB: Complete ==="
+{{- end }}

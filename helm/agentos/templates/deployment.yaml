@@ -1,0 +1,164 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentos.fullname" . }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agentos.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "agentos.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agentos.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # -----------------------------------------------------------------
+        # AgentOS container
+        # -----------------------------------------------------------------
+        - name: agentos
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            # --- Database (auto-generated from .Values.database) ---
+            - name: DB_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: DB_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: DB_DRIVER
+              value: {{ .Values.database.driver | quote }}
+            - name: DB_USER
+              value: {{ .Values.database.appUser | quote }}
+            {{- if .Values.externalSecrets.enabled }}
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecrets.targetSecretName }}
+                  key: db_pass
+                  optional: true
+            {{- end }}
+            # Constructed URLs using K8s variable substitution
+            - name: POSTGRES_URL
+              value: {{ include "agentos.postgresUrl" . | quote }}
+            - name: POSTGRES_RAW_URL
+              value: {{ include "agentos.postgresRawUrl" . | quote }}
+            - name: PGVECTOR_DB_URL
+              value: {{ include "agentos.postgresUrl" . | quote }}
+            # --- Runtime defaults ---
+            - name: PYTHONPATH
+              value: "/app"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            {{- if .Values.gitSync.enabled }}
+            - name: AGENTS_DIR
+              value: "/agents"
+            {{- end }}
+            # --- User-supplied env vars ---
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.gitSync.enabled }}
+            - name: agents
+              mountPath: /agents
+              {{- if .Values.gitSync.subPath }}
+              subPath: {{ .Values.gitSync.subPath }}
+              {{- end }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- if .Values.gitSync.enabled }}
+        # -----------------------------------------------------------------
+        # Git-Sync sidecar — pulls agent code into /agents
+        # -----------------------------------------------------------------
+        - name: git-sync
+          image: "{{ .Values.gitSync.image.repository }}:{{ .Values.gitSync.image.tag }}"
+          env:
+            - name: GITSYNC_REPO
+              value: {{ .Values.gitSync.repo | quote }}
+            - name: GITSYNC_REF
+              value: {{ .Values.gitSync.branch | quote }}
+            - name: GITSYNC_ROOT
+              value: "/git"
+            - name: GITSYNC_LINK
+              value: "current"
+            - name: GITSYNC_PERIOD
+              value: {{ .Values.gitSync.period | quote }}
+            - name: GITSYNC_ONE_TIME
+              value: "false"
+            {{- if .Values.gitSync.auth.secretName }}
+            - name: GITSYNC_USERNAME
+              value: {{ .Values.gitSync.auth.username | quote }}
+            - name: GITSYNC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gitSync.auth.secretName }}
+                  key: {{ .Values.gitSync.auth.secretKey }}
+            {{- end }}
+          volumeMounts:
+            - name: agents
+              mountPath: /git
+          securityContext:
+            runAsUser: 61000
+            runAsGroup: 61000
+        {{- end }}
+      volumes:
+        {{- if .Values.gitSync.enabled }}
+        - name: agents
+          emptyDir: {}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

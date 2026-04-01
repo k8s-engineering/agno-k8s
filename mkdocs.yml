@@ -1,0 +1,18 @@
+site_name: AgentOS on Kubernetes
+site_url: https://k8s-engineering.github.io/agno-k8s
+repo_url: https://github.com/k8s-engineering/agno-k8s
+repo_name: k8s-engineering/agno-k8s
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+
+nav:
+  - Home: index.md
+  - Agno Architecture: agno-architecture.md
+  - Kubernetes Deployment: kubernetes-deployment.md
+
+docs_dir: docs

@@ -1,0 +1,253 @@
+---
+# =============================================================================
+# AgentOS Helm Chart — values.yaml
+#
+# Feature flags control optional components:
+#   istio.enabled       — Istio VirtualService for ingress routing
+#   initDb.enabled      — Pre-install Job to create database, user, and schema
+#   gitSync.enabled     — Sidecar container pulling agent code from Git
+#   externalSecrets.enabled — External Secrets Operator integration
+# =============================================================================
+
+# -- Global settings ----------------------------------------------------------
+fullnameOverride: ""
+nameOverride: ""
+clusterName: ""
+
+# =============================================================================
+# DEPLOYMENT
+# =============================================================================
+replicaCount: 1
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+image:
+  repository: "ghcr.io/k8s-engineering/agno-k8s/agentos"
+  pullPolicy: Always
+  tag: "latest"
+
+imagePullSecrets: []
+#  - name: ghcr-token
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  #  eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/agentos"
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 61000
+  runAsUser: 61000
+  runAsNonRoot: true
+  runAsGroup: 61000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  privileged: false
+  readOnlyRootFilesystem: false
+  runAsUser: 61000
+  runAsNonRoot: true
+  runAsGroup: 61000
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+database:
+  host: ""
+  port: 5432
+  name: "agno"
+  driver: "postgresql+psycopg"
+  # App-level user (created by init-db job if initDb.enabled)
+  appUser: "agno"
+
+# =============================================================================
+# FEATURE: Init Database Job (pre-install hook)
+# =============================================================================
+initDb:
+  enabled: false
+  image: postgres:17-alpine
+  ttlSecondsAfterFinished: 300
+  # RDS admin credentials (from externalSecrets or inline)
+  adminCredentials:
+    secretName: "rds-credentials"
+    usernameKey: "username"
+    passwordKey: "password"
+
+# =============================================================================
+# FEATURE: Git-Sync Sidecar
+# =============================================================================
+gitSync:
+  enabled: false
+  image:
+    repository: registry.k8s.io/git-sync/git-sync
+    tag: "v4.4.0"
+  repo: ""
+  branch: "main"
+  subPath: ""
+  period: "30s"
+  # Auth for private repos (token from a K8s secret)
+  auth:
+    username: "x-access-token"
+    secretName: ""
+    secretKey: ""
+
+# =============================================================================
+# FEATURE: Istio VirtualService
+# =============================================================================
+istio:
+  enabled: false
+  gateway: "istio-ingress/default-gateway"
+  hostname: ""
+  # Timeout for long-running agent requests
+  timeout: "3600s"
+
+# =============================================================================
+# FEATURE: External Secrets Operator
+# =============================================================================
+externalSecrets:
+  enabled: false
+  # Target K8s secret name that ExternalSecret(s) will populate
+  targetSecretName: "agentos-secrets"
+  # Default refresh interval for all secrets
+  refreshInterval: "48h"
+
+  # SecretStore reference — the ESO SecretStore or ClusterSecretStore
+  # that provides access to the external secret provider.
+  secretStoreRef:
+    name: ""
+    kind: "SecretStore"   # or "ClusterSecretStore"
+
+  # -------------------------------------------------------------------
+  # Secrets map — each entry becomes a key in the target K8s Secret.
+  # The provider-specific fields (remoteRef) vary by backend.
+  #
+  # Example for Keeper:
+  #   secrets:
+  #     openai_api_key:
+  #       remoteRef:
+  #         key: "sLXJGAObJv9bZauWHdm4hA"
+  #         property: "password"
+  #
+  # Example for AWS SSM Parameter Store:
+  #   secrets:
+  #     db_password:
+  #       remoteRef:
+  #         key: "/prod/database/password"
+  #
+  # Example for HashiCorp Vault:
+  #   secrets:
+  #     api_key:
+  #       remoteRef:
+  #         key: "secret/data/myapp"
+  #         property: "api_key"
+  # -------------------------------------------------------------------
+  secrets: {}
+  #  openai_api_key:
+  #    remoteRef:
+  #      key: "<record-id-or-path>"
+  #      property: "password"
+  #  jira_token:
+  #    remoteRef:
+  #      key: "<record-id-or-path>"
+  #      property: "password"
+
+  # -------------------------------------------------------------------
+  # RDS / admin credentials — separate ExternalSecret for DB admin creds
+  # used by the init-db job.  Uses a potentially different SecretStore
+  # (e.g. ClusterSecretStore backed by AWS SSM).
+  # -------------------------------------------------------------------
+  rdsCredentials:
+    enabled: false
+    refreshInterval: "48h"
+    secretStoreRef:
+      name: ""
+      kind: "ClusterSecretStore"
+    target:
+      name: "rds-credentials"
+    remoteRef:
+      usernameKey: ""
+      passwordKey: ""
+
+# =============================================================================
+# ENVIRONMENT VARIABLES
+# =============================================================================
+# Additional env vars injected into the AgentOS container.
+# Database env vars (DB_HOST, DB_PORT, etc.) are auto-generated from
+# the database section above.
+env: []
+#  - name: RUNTIME_ENV
+#    value: "production"
+#  - name: OPENAI_API_KEY
+#    valueFrom:
+#      secretKeyRef:
+#        name: agentos-secrets
+#        key: openai_api_key
+
+# =============================================================================
+# SERVICE
+# =============================================================================
+service:
+  type: ClusterIP
+  port: 8000
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  # limits:
+  #   cpu: "2"
+  #   memory: "4Gi"
+
+# =============================================================================
+# PROBES
+# =============================================================================
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  timeoutSeconds: 10
+  failureThreshold: 5
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 10
+  failureThreshold: 5
+
+# =============================================================================
+# VOLUMES (beyond git-sync, which is auto-managed)
+# =============================================================================
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+    readOnly: false
+
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+
+# =============================================================================
+# SCHEDULING
+# =============================================================================
+nodeSelector: {}
+tolerations: []
+affinity: {}

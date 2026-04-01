@@ -1,0 +1,68 @@
+name: Build Helm Chart
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "helm/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate next version
+        id: version
+        shell: bash
+        run: |
+          # Find latest tag for this package (helm/v*)
+          LATEST=$(git tag -l 'helm/v*' --sort=-v:refname | head -n1)
+          if [[ -z "$LATEST" ]]; then
+            NEW_VERSION="1.0.0"
+          else
+            # Extract version, increment patch
+            VER=${LATEST#helm/v}
+            MAJOR=${VER%%.*}
+            REMAINDER=${VER#*.}
+            MINOR=${REMAINDER%%.*}
+            PATCH=${REMAINDER#*.}
+            PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${NEW_VERSION}"
+
+      - name: Create and push version tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag "helm/v${{ steps.version.outputs.version }}"
+          git push origin "helm/v${{ steps.version.outputs.version }}"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: Update Chart.yaml version
+        run: |
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.version }}/" helm/agentos/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.version }}\"/" helm/agentos/Chart.yaml
+
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Package and push Helm chart
+        run: |
+          helm package helm/agentos --version ${{ steps.version.outputs.version }}
+          helm push agentos-${{ steps.version.outputs.version }}.tgz oci://ghcr.io/${{ github.repository }}/charts
