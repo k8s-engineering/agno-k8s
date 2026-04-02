@@ -2,7 +2,7 @@ name: Build Helm Chart
 
 on:
   push:
-    branches: [main]
+    branches: [main, "devin/1775085511-scaffold-agentos-k8s"]
     paths:
       - "helm/**"
   workflow_dispatch:
