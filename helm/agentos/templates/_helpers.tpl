@@ -60,12 +60,12 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Build the standard PostgreSQL connection URL.
-Format: {driver}://{user}:{password}@{host}:{port}/{database}
+Build the standard PostgreSQL connection URL (SQLAlchemy + psycopg driver).
+Format: postgresql+psycopg://{user}:{password}@{host}:{port}/{database}
 The password is injected via K8s env var substitution $(DB_PASS).
 */}}
 {{- define "agentos.postgresUrl" -}}
-{{- printf "%s://%s:$(DB_PASS)@%s:%s/%s" .Values.database.driver .Values.database.appUser (required "database.host is required" .Values.database.host) (toString .Values.database.port) .Values.database.name }}
+{{- printf "postgresql+psycopg://%s:$(DB_PASS)@%s:%s/%s" .Values.database.appUser (required "database.host is required" .Values.database.host) (toString .Values.database.port) .Values.database.name }}
 {{- end }}
 
 {{/*

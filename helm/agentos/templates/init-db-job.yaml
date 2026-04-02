@@ -34,21 +34,19 @@ spec:
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.initDb.adminCredentials.secretName }}
+                  name: {{ required "initDb.adminCredentials.secretName is required when initDb.enabled" .Values.initDb.adminCredentials.secretName }}
                   key: {{ .Values.initDb.adminCredentials.usernameKey }}
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.initDb.adminCredentials.secretName }}
+                  name: {{ required "initDb.adminCredentials.secretName is required when initDb.enabled" .Values.initDb.adminCredentials.secretName }}
                   key: {{ .Values.initDb.adminCredentials.passwordKey }}
-            {{- if .Values.externalSecrets.enabled }}
             - name: APP_PASS
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.externalSecrets.targetSecretName }}
-                  key: db_pass
+                  name: {{ .Values.database.passwordSecretName }}
+                  key: {{ .Values.database.passwordSecretKey }}
                   optional: true
-            {{- end }}
           command:
             - /bin/bash
             - -c
