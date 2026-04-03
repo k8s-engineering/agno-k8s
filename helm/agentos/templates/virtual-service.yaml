@@ -1,0 +1,23 @@
+{{- if .Values.istio.enabled }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ include "agentos.fullname" . }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ required "istio.hostname is required when istio is enabled" .Values.istio.hostname | quote }}
+  gateways:
+    - {{ .Values.istio.gateway | quote }}
+  http:
+    - match:
+        - uri:
+            prefix: "/"
+      route:
+        - destination:
+            host: {{ include "agentos.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.service.port }}
+      timeout: {{ .Values.istio.timeout | quote }}
+{{- end }}

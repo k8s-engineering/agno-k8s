@@ -1,0 +1,327 @@
+---
+# =============================================================================
+# AgentOS Helm Chart — values.yaml
+#
+# Feature flags control optional components:
+#   istio.enabled              — Istio VirtualService for ingress routing
+#   initDb.enabled             — Pre-install Job to create database, user, schema
+#   gitSync.enabled            — Sidecar container pulling agent code from Git
+#   externalSecrets.enabled    — External Secrets Operator integration
+# =============================================================================
+
+# -- Global settings ----------------------------------------------------------
+fullnameOverride: ""
+nameOverride: ""
+clusterName: ""
+
+# =============================================================================
+# DEPLOYMENT
+# =============================================================================
+replicaCount: 1
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+image:
+  repository: "ghcr.io/k8s-engineering/agno-k8s/agentos"
+  pullPolicy: Always
+  tag: "latest"
+
+imagePullSecrets: []
+#  - name: ghcr-token
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  #  eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/agentos"
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 61000
+  runAsUser: 61000
+  runAsNonRoot: true
+  runAsGroup: 61000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  privileged: false
+  readOnlyRootFilesystem: false
+  runAsUser: 61000
+  runAsNonRoot: true
+  runAsGroup: 61000
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+# AgentOS requires a PostgreSQL database with the pgvector extension.
+# Provide the connection details for an existing PostgreSQL instance
+# (e.g. an in-cluster StatefulSet, AWS RDS, Cloud SQL, etc.).
+#
+# The Helm chart auto-generates connection URLs from these values:
+#   POSTGRES_URL     = postgresql+psycopg://{appUser}:{password}@{host}:{port}/{name}
+#   POSTGRES_RAW_URL = postgresql://{appUser}:{password}@{host}:{port}/{name}
+#   PGVECTOR_DB_URL  = postgresql+psycopg://{appUser}:{password}@{host}:{port}/{name}
+#
+# The password (DB_PASS) is sourced from a K8s Secret — either populated by
+# External Secrets Operator or created manually.
+database:
+  host: ""                  # Required — hostname of the PostgreSQL server
+  port: 5432
+  name: "agno"
+  appUser: "agno"           # App-level user (created by init-db job when initDb.enabled)
+  passwordSecretName: "agentos-secrets"
+  passwordSecretKey: "db_pass"
+
+# =============================================================================
+# FEATURE: Init Database Job (Helm pre-install hook)
+# =============================================================================
+# When enabled, runs a one-shot Job that:
+#   1. Creates the database if it doesn't exist
+#   2. Creates the app user with the specified password
+#   3. Creates the 'ai' schema for PgVector / RAG tables
+#   4. Enables the pgvector extension
+#   5. Grants privileges to the app user
+#
+# Requires admin credentials to connect to the PostgreSQL server.
+# These should come from a K8s Secret (created manually or via ExternalSecrets).
+initDb:
+  enabled: false
+  image: postgres:17-alpine
+  ttlSecondsAfterFinished: 300
+  adminCredentials:
+    secretName: ""          # Required when initDb.enabled — K8s Secret with admin creds
+    usernameKey: "username"
+    passwordKey: "password"
+
+# =============================================================================
+# FEATURE: Git-Sync Sidecar
+# =============================================================================
+# When enabled, adds a git-sync sidecar that pulls agent code from a Git repo
+# into a shared volume mounted at /agents in the AgentOS container.
+#
+# The sidecar polls the repo at the configured interval and atomically swaps
+# the symlink when new commits are detected. The AgentOS filesystem watcher
+# detects this and triggers a hot-reload of agents.
+#
+# Example — sync agents from a private GitHub repo:
+#   gitSync:
+#     enabled: true
+#     repo: "https://github.com/your-org/your-agents.git"
+#     branch: "main"
+#     subPath: "agents"          # subdirectory within the repo containing .py files
+#     period: "30s"
+#     auth:
+#       username: "x-access-token"
+#       secretName: "git-credentials"
+#       secretKey: "token"
+#
+# Example — sync from a public repo (no auth needed):
+#   gitSync:
+#     enabled: true
+#     repo: "https://github.com/your-org/public-agents.git"
+#     branch: "main"
+gitSync:
+  enabled: false
+  image:
+    repository: registry.k8s.io/git-sync/git-sync
+    tag: "v4.4.0"
+  repo: ""
+  branch: "main"
+  subPath: ""
+  period: "30s"
+  auth:
+    username: "x-access-token"
+    secretName: ""
+    secretKey: ""
+
+# =============================================================================
+# FEATURE: Istio VirtualService
+# =============================================================================
+# When enabled, creates an Istio VirtualService that routes external traffic
+# through an Istio IngressGateway to the AgentOS ClusterIP service.
+#
+# Example:
+#   istio:
+#     enabled: true
+#     gateway: "istio-ingress/my-gateway"
+#     hostname: "agentos.example.com"
+#     timeout: "3600s"
+istio:
+  enabled: false
+  gateway: ""
+  hostname: ""
+  timeout: "3600s"
+
+# =============================================================================
+# FEATURE: External Secrets Operator
+# =============================================================================
+# When enabled, creates ExternalSecret resources that fetch secrets from an
+# external provider (Keeper, AWS SSM, HashiCorp Vault, Azure Key Vault, etc.)
+# and populate a target K8s Secret.
+#
+# Prerequisites:
+#   - External Secrets Operator installed in the cluster
+#   - A SecretStore or ClusterSecretStore configured for your provider
+#
+# Example — Keeper:
+#   externalSecrets:
+#     enabled: true
+#     targetSecretName: "agentos-secrets"
+#     secretStoreRef:
+#       name: "keeper-store"
+#       kind: "SecretStore"
+#     secrets:
+#       openai_api_key:
+#         remoteRef:
+#           key: "sLXJGAObJv9bZauWHdm4hA"
+#           property: "password"
+#       db_pass:
+#         remoteRef:
+#           key: "vHtTEJeZxmkDI_CTVLOzXg"
+#           property: "password"
+#
+# Example — AWS SSM Parameter Store:
+#   externalSecrets:
+#     enabled: true
+#     secretStoreRef:
+#       name: "aws-ssm-store"
+#       kind: "ClusterSecretStore"
+#     secrets:
+#       openai_api_key:
+#         remoteRef:
+#           key: "/prod/agentos/openai-api-key"
+#       db_pass:
+#         remoteRef:
+#           key: "/prod/database/app-password"
+#
+# Example — HashiCorp Vault:
+#   externalSecrets:
+#     enabled: true
+#     secretStoreRef:
+#       name: "vault-store"
+#       kind: "ClusterSecretStore"
+#     secrets:
+#       openai_api_key:
+#         remoteRef:
+#           key: "secret/data/agentos"
+#           property: "openai_api_key"
+externalSecrets:
+  enabled: false
+  refreshInterval: "48h"
+  secretStoreRef:
+    name: ""
+    kind: "SecretStore"
+  secrets: {}
+
+  # Admin credentials for init-db job — uses a separate ExternalSecret
+  # because these often come from a different SecretStore (e.g. AWS SSM
+  # for RDS master creds vs Keeper for app secrets).
+  #
+  # Example:
+  #   adminCredentials:
+  #     enabled: true
+  #     secretStoreRef:
+  #       name: "aws-ssm-store"
+  #       kind: "ClusterSecretStore"
+  #     target:
+  #       name: "db-admin-credentials"
+  #     remoteRef:
+  #       usernameKey: "/prod/database/admin-username"
+  #       passwordKey: "/prod/database/admin-password"
+  adminCredentials:
+    enabled: false
+    refreshInterval: "48h"
+    secretStoreRef:
+      name: ""
+      kind: "ClusterSecretStore"
+    target:
+      name: "db-admin-credentials"
+    remoteRef:
+      usernameKey: ""
+      passwordKey: ""
+
+# =============================================================================
+# ENVIRONMENT VARIABLES
+# =============================================================================
+# Additional env vars injected into the AgentOS container.
+# Database env vars (DB_HOST, DB_PORT, etc.) are auto-generated from
+# the database section above.
+env: []
+#  - name: RUNTIME_ENV
+#    value: "production"
+#  - name: OPENAI_API_KEY
+#    valueFrom:
+#      secretKeyRef:
+#        name: agentos-secrets
+#        key: openai_api_key
+
+# =============================================================================
+# SERVICE
+# =============================================================================
+service:
+  type: ClusterIP
+  port: 8000
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  # limits:
+  #   cpu: "2"
+  #   memory: "4Gi"
+
+# =============================================================================
+# PROBES
+# =============================================================================
+# AgentOS exposes a built-in /health endpoint that returns 200 when the
+# FastAPI server is accepting requests. These values match the existing
+# production deployment.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  timeoutSeconds: 10
+  failureThreshold: 5
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 10
+  failureThreshold: 5
+
+# =============================================================================
+# VOLUMES (beyond git-sync, which is auto-managed)
+# =============================================================================
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+    readOnly: false
+
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+
+# =============================================================================
+# SCHEDULING
+# =============================================================================
+nodeSelector: {}
+tolerations: []
+affinity: {}
