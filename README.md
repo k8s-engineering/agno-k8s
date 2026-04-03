@@ -2,6 +2,8 @@
 
 A production-grade reference implementation for deploying [Agno AgentOS](https://docs.agno.com/agent-os) on Kubernetes.
 
+> **Documentation**: [k8s-engineering.github.io/agno-k8s](https://k8s-engineering.github.io/agno-k8s) | **Agno Docs**: [docs.agno.com](https://docs.agno.com)
+
 ## What is AgentOS?
 
 AgentOS is a FastAPI-based runtime for managing AI agents built with the [Agno](https://github.com/agno-agi/agno) framework. This repository demonstrates how to deploy it on Kubernetes with:
@@ -11,6 +13,43 @@ AgentOS is a FastAPI-based runtime for managing AI agents built with the [Agno](
 - **Dual-export tracing** — OpenTelemetry spans sent to both a local Postgres DB (Agno UI) and an external OTLP collector
 - **Feature-flag Helm chart** — toggle Istio, git-sync, DB init, and external secrets via simple `true/false` values
 - **Semantic versioning** — both the Docker image and Helm chart are auto-versioned on every code change
+
+## What Changed from the Base AgentOS Template
+
+The upstream [agno-agi/agentos-docker-template](https://github.com/agno-agi/agentos-docker-template) is a single-file starter. This repo extends it for Kubernetes with the following changes:
+
+### Application Architecture
+
+| Change | Upstream Template | This Repo |
+|--------|-------------------|-----------|
+| **Entry point** | `main.py` (~43 lines), statically imports agents | `main.py` (~120 lines), uses `base_app` pattern with `APIRouter` modules |
+| **Agent loading** | Agents baked into the image at build time | Dynamic discovery from `/agents` via `importlib` at runtime |
+| **Hot-reload** | None — requires image rebuild + redeploy | `watcher.py` detects git-sync symlink swaps, triggers `resync()` with route snapshot/restore |
+| **Lifespan** | Default AgentOS lifespan | Custom lifespan passed to `AgentOS()` constructor — starts filesystem watcher, metrics collector, and daemon threads |
+| **Custom routes** | None | `routers/admin.py` (reload endpoint), `routers/observability.py` (metrics, DB size tracking) |
+| **Shared state** | Not needed | `shared.py` — cross-cutting references (agent_os instance) accessible to all routers |
+| **Route conflict** | Not applicable | `on_route_conflict="preserve_base_app"` protects custom routes during AgentOS initialization |
+
+### Observability
+
+| Change | Upstream Template | This Repo |
+|--------|-------------------|-----------|
+| **Tracing** | Single DB exporter | Dual-export: DB (Agno UI) + OTLP (external collector) via shared `TracerProvider` |
+| **Metrics** | None | `metrics.py` — OTel counters, histograms, gauges for agent runs, webhook throughput, DB table sizes |
+| **OTLP toggle** | Not applicable | Enabled when `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set; zero-cost no-ops when unset |
+
+### Kubernetes-Specific
+
+| Change | Upstream Template | This Repo |
+|--------|-------------------|-----------|
+| **Container image** | `docker-compose` for local dev | Multi-stage Dockerfile optimized for K8s (non-root UID 61000, DB readiness wait in entrypoint) |
+| **Agent delivery** | Copied into image via `COPY` | git-sync sidecar pulls from Git repo into shared `emptyDir` volume |
+| **Configuration** | `example.env` + Docker Compose env | Helm `values.yaml` with feature flags (`istio`, `initDb`, `gitSync`, `externalSecrets`) |
+| **Secrets** | `.env` file | External Secrets Operator (Keeper, AWS SSM, Vault) or manual K8s Secrets |
+| **DB initialization** | Manual | Helm pre-install Job creates database, user, schema, pgvector extension |
+| **Health probes** | Built-in `/health` endpoint | Configured as K8s liveness/readiness probes in the Deployment |
+| **Ingress** | Not applicable | Optional Istio VirtualService with configurable gateway and timeout |
+| **Dev tooling** | Docker Compose, build/format scripts | Removed in favor of Helm-only deployment; CI/CD via GitHub Actions |
 
 ## Repository Structure
 
@@ -111,8 +150,17 @@ Both the Docker image and Helm chart use semantic versioning (`major.minor.patch
 
 ## Documentation
 
+- **[Full Documentation](https://k8s-engineering.github.io/agno-k8s)** — hosted on GitHub Pages (architecture, deployment guide, operations)
 - [Agno Architecture](docs/agno-architecture.md) — framework patterns and design decisions
 - [Kubernetes Deployment](docs/kubernetes-deployment.md) — deployment model, scaling, and operations
+
+### External References
+
+- [Agno Documentation](https://docs.agno.com) — official Agno framework docs
+- [AgentOS Overview](https://docs.agno.com/agent-os) — AgentOS runtime documentation
+- [Custom FastAPI (base_app)](https://docs.agno.com/agent-os/custom-fastapi/overview) — `base_app` pattern reference
+- [Agno GitHub](https://github.com/agno-agi/agno) — Agno framework source code
+- [AgentOS Docker Template](https://github.com/agno-agi/agentos-docker-template) — upstream starter template
 
 ## License
 
