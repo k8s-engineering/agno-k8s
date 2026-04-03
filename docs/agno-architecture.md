@@ -13,6 +13,105 @@ This document describes the Agno AgentOS framework patterns used in this deploym
 
 This repository implements AgentOS following Agno's recommended patterns rather than the monolithic approach that often evolves in POC deployments.
 
+## What Changed from the Default AgentOS
+
+The upstream [agentos-docker-template](https://github.com/agno-agi/agentos-docker-template) is a minimal starter — 43 lines of `main.py`, two hardcoded agents, and a Docker Compose dev workflow. This repository restructures it for production Kubernetes deployment while preserving the same base image and entrypoint.
+
+### Architecture Comparison
+
+```mermaid
+graph LR
+    subgraph "Default Template"
+        DM["main.py<br/>43 lines"] --> DOS["AgentOS()"]
+        DOS --> DAPP["get_app()"]
+        DA["agents/<br/>hardcoded imports"] --> DOS
+    end
+
+    subgraph "K8s Version"
+        KM["main.py<br/>147 lines"] --> KBA["base_app<br/>+ routers"]
+        KBA --> KOS["AgentOS(<br/>base_app, lifespan)"]
+        KOS --> KAPP["get_app()"]
+        KAL["agent_loader<br/>dynamic discovery"] --> KOS
+        KW["watcher<br/>hot-reload"] -.-> KOS
+        KME["metrics<br/>OTel SDK"] -.-> KAPP
+    end
+
+    style DM fill:#e8eaf6,stroke:#3949ab
+    style KM fill:#4051b5,color:#fff
+    style KOS fill:#4051b5,color:#fff
+    style KW fill:#ff9800,color:#fff
+    style KME fill:#f5a623,color:#fff
+```
+
+### Side-by-Side: Application Structure
+
+| Aspect | Default Template | K8s Version |
+|--------|-----------------|-------------|
+| **`main.py`** | 43 lines — construct AgentOS, call `get_app()` | 147 lines — tracing setup, agent discovery, lifespan, `base_app` pattern |
+| **Agent loading** | Static imports (`from agents.knowledge_agent import ...`) | Dynamic discovery via `importlib` from `/agents` volume |
+| **Agent source** | Baked into container image (`agents/` directory in Docker context) | Delivered at runtime via git-sync sidecar (shared `emptyDir` volume) |
+| **Hot-reload** | None — requires container restart | Filesystem watcher + symlink poller detects changes within seconds |
+| **Custom routes** | None — only AgentOS built-in routes | `base_app` pattern with `APIRouter` modules (`/admin/*`, `/api/*`) |
+| **Lifespan** | Framework default (no custom lifespan) | Constructor-injected lifespan (watcher, metrics, daemon threads) |
+| **Tracing** | Framework default (DB exporter only via `tracing=True`) | Dual-export: DB exporter + OTLP exporter to external collector |
+| **Metrics** | None | Full OTel SDK: counters, histograms, gauges pushed via OTLP gRPC |
+| **Route conflict** | Not configured | `on_route_conflict="preserve_base_app"` |
+| **File structure** | Flat: `app/main.py`, `agents/`, `db/`, `scripts/` | Modular: `app/main.py`, `app/routers/`, `app/shared.py`, `app/watcher.py`, `app/metrics.py`, `app/agent_loader.py` |
+
+### Side-by-Side: Container & Deployment
+
+| Aspect | Default Template | K8s Version |
+|--------|-----------------|-------------|
+| **Base image** | `agnohq/python:3.12` | `agnohq/python:3.12` (identical) |
+| **User** | UID 61000, non-root | UID 61000, non-root (identical) |
+| **Entrypoint** | `entrypoint.sh` with banner, `WAIT_FOR_DB`, chill mode | Identical `entrypoint.sh` |
+| **Default CMD** | `chill` (sleep loop — manual start) | `uvicorn app.main:app --host 0.0.0.0 --port 8000` (auto-start) |
+| **COPY strategy** | `COPY . .` (entire repo including agents) | `COPY src/ .` (app code only, no agents) |
+| **`/agents` volume** | Not present — agents are in the image | `mkdir -p /agents && chown app:app /agents` — mount point for git-sync |
+| **Dependencies** | 90 packages (core framework only) | 157 packages (+67 for observability, data processing, document parsing) |
+| **Dev workflow** | Docker Compose, build/format/validate scripts, `example.env` | Kubernetes-only: Helm chart, GitHub Actions CI/CD |
+| **Deployment** | Single container via `docker compose up` | Multi-container pod (AgentOS + git-sync sidecar), Helm-managed |
+| **Scaling** | Single instance | Horizontal: multiple replicas behind Istio/Service |
+| **Secrets** | `example.env` file, manual | External Secrets Operator (Keeper, AWS SSM, Vault, etc.) |
+
+### Key Additions (Not in Default Template)
+
+These modules are entirely new — they have no equivalent in the upstream template:
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `agent_loader.py` | 139 | Dynamic agent discovery via `importlib` — scans `/agents` for Python files, collects `Agent` instances, handles `.env` loading and module reloading |
+| `watcher.py` | 258 | Filesystem watcher (`watchdog`) + symlink poller for git-sync — debounced reload, route snapshot/restore through `resync()` |
+| `metrics.py` | 226 | Full OTel metrics SDK — counters, histograms, observable gauges for webhooks, agents, queues, DB tables; OTLP gRPC push exporter |
+| `shared.py` | 64 | Cross-cutting state shared by routers — `agent_os` reference, webhook auth, agent lookup |
+| `routers/admin.py` | 55 | Admin endpoints — `/admin/reload` for manual agent resync |
+| `routers/observability.py` | 57 | Debug metrics endpoint (`/api/metrics`) + background DB size collector |
+
+### Dependency Additions
+
+The K8s version adds ~67 packages on top of the default template's 90:
+
+| Category | Key Packages | Why |
+|----------|-------------|-----|
+| **Observability** | `arize-phoenix-client`, `opentelemetry-exporter-otlp-proto-grpc`, `opentelemetry-exporter-otlp-proto-http`, `sentry-sdk` | Dual-export tracing (DB + OTLP), Phoenix evals, error tracking |
+| **Data processing** | `pandas`, `pyarrow`, `tabulate` | Agent data analysis and transformation |
+| **Document parsing** | `beautifulsoup4`, `lxml`, `pypdf`, `python-docx`, `openpyxl`, `odfpy` | Agents that process uploaded documents |
+| **HTTP** | `aiohttp`, `requests` | Webhook callbacks, external API calls |
+| **Image** | `Pillow` | Image processing in agent workflows |
+| **File watching** | `watchdog` | Filesystem watcher for hot-reload |
+
+### What Stayed the Same
+
+These elements are identical or functionally equivalent between the default template and the K8s version:
+
+- **Base image** — `agnohq/python:3.12` (same Agno-maintained Python image)
+- **Non-root user** — UID/GID 61000, same `groupadd`/`useradd` commands
+- **Entrypoint script** — Identical `entrypoint.sh` (banner, `WAIT_FOR_DB`, chill mode)
+- **Database module** — `db/session.py` with `get_postgres_db()` using `POSTGRES_URL` and `PGVECTOR_DB_URL`
+- **AgentOS constructor** — Same core parameters (`name`, `tracing`, `scheduler`, `scheduler_base_url`, `db`, `config`)
+- **Config format** — Same `config.yaml` for AgentOS settings
+- **Package installer** — `uv pip sync requirements.txt --system`
+
 ## Application Bootstrap Flow
 
 ```mermaid
