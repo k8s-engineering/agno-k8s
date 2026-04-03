@@ -13,6 +13,21 @@ This document describes the Agno AgentOS framework patterns used in this deploym
 
 This repository implements AgentOS following Agno's recommended patterns rather than the monolithic approach that often evolves in POC deployments.
 
+## Application Bootstrap Flow
+
+```mermaid
+flowchart LR
+    A["Dual-export<br/>Tracing Setup"] --> B["Discover Agents<br/>from /agents"]
+    B --> C["Create base_app<br/>+ include routers"]
+    C --> D["Construct AgentOS<br/>(base_app, lifespan)"]
+    D --> E["agent_os.get_app()"]
+    E --> F["Uvicorn serves app"]
+
+    style A fill:#e8eaf6,stroke:#3949ab
+    style D fill:#4051b5,color:#fff
+    style F fill:#43a047,color:#fff
+```
+
 ## Four Pillars
 
 ### 1. `base_app` Pattern
@@ -33,6 +48,28 @@ app = agent_os.get_app()
 ```
 
 **Why `on_route_conflict="preserve_base_app"`**: Your routes (`/api/*`, `/admin/*`) don't overlap with AgentOS routes (`/agents/*`, `/sessions/*`, `/knowledge/*`, `/health`), so the conflict handler rarely fires. Setting it explicitly documents intent and protects against future AgentOS releases adding overlapping routes.
+
+```mermaid
+graph LR
+    subgraph "base_app (FastAPI)"
+        R1["/admin/reload"]
+        R2["/api/metrics"]
+    end
+
+    subgraph "AgentOS Routes"
+        R3["/agents/*"]
+        R4["/sessions/*"]
+        R5["/knowledge/*"]
+        R6["/health"]
+    end
+
+    BA["base_app"] -->|passed to| AOS["AgentOS(base_app=...)"]
+    AOS -->|merges routes| APP["Final App"]
+
+    style BA fill:#e8eaf6,stroke:#3949ab
+    style AOS fill:#4051b5,color:#fff
+    style APP fill:#43a047,color:#fff
+```
 
 ### 2. Constructor Lifespan
 
@@ -70,6 +107,27 @@ When `lifespan` is passed at construction, `get_app()` calls `_add_agent_os_to_l
 11. Your lifespan (shutdown)
 
 Your lifespan wraps everything — it starts before framework resources initialize and stops after they close.
+
+```mermaid
+sequenceDiagram
+    participant YL as Your Lifespan
+    participant DB as DB Lifespan
+    participant MCP as MCP Tools
+    participant SCHED as Scheduler
+    participant APP as App Serving
+
+    Note over YL,APP: Startup (top to bottom)
+    YL->>YL: Start watcher, metrics, workers
+    DB->>DB: Init tables, connections
+    MCP->>MCP: Register MCP tools
+    SCHED->>SCHED: Start scheduler poller
+    APP->>APP: Serving requests...
+    Note over YL,APP: Shutdown (bottom to top)
+    SCHED->>SCHED: Stop scheduler
+    MCP->>MCP: Cleanup tools
+    DB->>DB: Close connections
+    YL->>YL: Stop watcher
+```
 
 ### 3. Dynamic Agent Loader + Watcher
 
@@ -117,6 +175,20 @@ custom_routes = [
 
 This is more defensive than an include-list — new custom routes are automatically preserved without filter updates.
 
+```mermaid
+flowchart TD
+    FS["Filesystem Event<br/>(symlink swap)"] --> DEB["Debounce<br/>2 seconds"]
+    DEB --> SNAP["Snapshot custom routes"]
+    SNAP --> DISC["Re-discover agents<br/>importlib reload"]
+    DISC --> SYNC["agent_os.resync()<br/>(wipes all routes)"]
+    SYNC --> REST["Restore custom routes"]
+    REST --> LIVE["New agents live"]
+
+    style FS fill:#ff9800,color:#fff
+    style SYNC fill:#d32f2f,color:#fff
+    style LIVE fill:#43a047,color:#fff
+```
+
 ### 4. Daemon Threads in Lifespan
 
 Long-running persistent workers (triage queues, metrics collectors, etc.) use `threading.Thread(daemon=True)` started **inside the lifespan**, not at import time.
@@ -141,6 +213,19 @@ AgentOS uses dual-export tracing:
 2. **OTLP exporter** — sends spans to an external collector (Phoenix, Grafana, Datadog, etc.)
 
 Both exporters are wired into the same `TracerProvider` via `SimpleSpanProcessor`, so every span goes to both destinations.
+
+```mermaid
+graph LR
+    AGENT["Agent Run"] --> TP["TracerProvider"]
+    TP --> SSP1["SimpleSpanProcessor"]
+    TP --> SSP2["SimpleSpanProcessor"]
+    SSP1 --> DBE["DatabaseSpanExporter<br/>(PostgreSQL → Agno UI)"]
+    SSP2 --> OTLP["OTLPSpanExporter<br/>(External Collector)"]
+
+    style AGENT fill:#4051b5,color:#fff
+    style DBE fill:#336791,color:#fff
+    style OTLP fill:#f5a623,color:#fff
+```
 
 ## Agent Packaging Model
 
