@@ -15,6 +15,46 @@ External dependencies:
 - **PostgreSQL (RDS)** — agent sessions, knowledge/RAG tables (ai schema), trace storage
 - **OTLP Collector** — receives traces and metrics (Coralogix, Grafana, Datadog, Phoenix, etc.)
 
+```mermaid
+graph TB
+    subgraph "Kubernetes Cluster"
+        subgraph "AgentOS Pod"
+            AOS["AgentOS Container<br/>:8000 · UID 61000"]
+            GS["git-sync sidecar<br/>(optional)"]
+            VOL[("/agents volume")]
+            GS -->|atomic symlink swap| VOL
+            VOL -->|reads| AOS
+        end
+
+        SVC["ClusterIP Service"]
+        SVC --> AOS
+
+        VS["Istio VirtualService<br/>(optional)"] --> SVC
+
+        INITJOB["init-db Job<br/>Helm pre-install hook<br/>(optional)"] -->|creates DB, user, schema| PG
+
+        ESO["ExternalSecret<br/>(optional)"] -->|populates| SEC["K8s Secret"]
+        SEC -->|mounted as env| AOS
+    end
+
+    PG[("PostgreSQL")]
+    AOS -->|sessions, RAG, traces| PG
+
+    OTLP["OTLP Collector"]
+    AOS -->|traces & metrics| OTLP
+
+    GIT["GitHub Repo"]
+    GIT -->|pull| GS
+
+    GW["External Traffic"] --> VS
+
+    style AOS fill:#4051b5,color:#fff
+    style PG fill:#336791,color:#fff
+    style VS fill:#466bb0,color:#fff
+    style INITJOB fill:#ff9800,color:#fff
+    style ESO fill:#7b1fa2,color:#fff
+```
+
 ## Feature Flags
 
 The Helm chart uses simple boolean flags to toggle optional components:
@@ -69,6 +109,28 @@ gitSync:
 ```
 
 The git-sync sidecar writes to an emptyDir shared volume. The AgentOS container reads from this volume at /agents. When git-sync detects a new commit, it creates a new worktree directory and atomically swaps the symlink. The AgentOS filesystem watcher detects this and triggers a reload.
+
+```mermaid
+sequenceDiagram
+    participant GH as GitHub
+    participant GS as git-sync
+    participant Vol as emptyDir Volume
+    participant W as Watcher (inotify)
+    participant AOS as AgentOS
+
+    loop Every period (default 30s)
+        GS->>GH: git fetch
+        alt New commit detected
+            GS->>Vol: Clone to rev-XXXXX/
+            GS->>Vol: ln -sfn rev-XXXXX current
+            Vol-->>W: Symlink change event
+            W->>W: Debounce (2s)
+            W->>AOS: Trigger reload
+            AOS->>AOS: discover_agents()
+            AOS->>AOS: resync()
+        end
+    end
+```
 
 ### External Secrets (`externalSecrets.enabled`)
 
@@ -155,6 +217,21 @@ AgentOS pods are stateless. All persistent state lives in PostgreSQL. You can sc
 
 With Istio enabled, traffic is automatically load-balanced across replicas.
 
+```mermaid
+graph LR
+    GW["Istio Gateway"] --> VS["VirtualService"]
+    VS --> SVC["ClusterIP Service"]
+    SVC --> P1["Pod 1<br/>AgentOS + git-sync"]
+    SVC --> P2["Pod 2<br/>AgentOS + git-sync"]
+    SVC --> P3["Pod N<br/>AgentOS + git-sync"]
+    P1 --> PG[("PostgreSQL<br/>(shared state)")]
+    P2 --> PG
+    P3 --> PG
+
+    style GW fill:#466bb0,color:#fff
+    style PG fill:#336791,color:#fff
+```
+
 **Important**: If your agents use in-memory dedup or caching (e.g. webhook dedup windows), you will need to centralize that state in Redis or PostgreSQL for multi-replica deployments.
 
 ### Resource Defaults
@@ -190,6 +267,19 @@ The Helm chart configures both liveness and readiness probes against the built-i
 Dual-export tracing sends OTel spans to:
 1. **PostgreSQL** for the Agno UI dashboard
 2. **External OTLP collector** for Grafana, Datadog, Coralogix, Phoenix, etc.
+
+```mermaid
+graph LR
+    AOS["AgentOS"] --> TP["TracerProvider"]
+    TP --> DB["DB Exporter<br/>→ PostgreSQL"]
+    TP --> OT["OTLP Exporter<br/>→ Collector"]
+    DB --> UI["Agno UI"]
+    OT --> GR["Grafana / Datadog /<br/>Coralogix / Phoenix"]
+
+    style AOS fill:#4051b5,color:#fff
+    style DB fill:#336791,color:#fff
+    style OT fill:#f5a623,color:#fff
+```
 
 Configure via environment variables:
 ```yaml
